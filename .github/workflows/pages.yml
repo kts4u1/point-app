@@ -3,7 +3,7 @@ name: Deploy app to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ["app/**", "pointcli.py", ".github/workflows/pages.yml"]
+    paths: ["app/**", "pointcli.py", "feeds.txt", ".github/workflows/pages.yml"]
   schedule:
     - cron: "17 */6 * * *" # 6시간마다 이벤트 갱신 (UTC)
   workflow_dispatch:
@@ -26,13 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Collect events
+      - name: Collect events (이전 배포분에 누적)
         env:
           POINTCLI_DB: ${{ runner.temp }}/point.db
+          SITE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
           python3 pointcli.py init
           python3 pointcli.py collect
-          python3 pointcli.py export-events --out app/events.json
+          # 이전 배포의 events.json을 받아 합친다. 첫 배포이거나 실패하면 빈 목록으로 시작.
+          curl -fsSL "$SITE/events.json" -o "$RUNNER_TEMP/prev.json" || echo "[]" > "$RUNNER_TEMP/prev.json"
+          python3 pointcli.py export-events --out app/events.json --merge "$RUNNER_TEMP/prev.json"
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 import urllib.robotparser
 import xml.etree.ElementTree as ET
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 DB_PATH = os.environ.get("POINTCLI_DB", os.path.expanduser("~/.pointcli.db"))
@@ -30,9 +30,28 @@ SEED = [
 
 # 실제로 열리고 robots.txt가 허용함을 확인한 피드(2026-10-09). 사이트 약관은 직접 확인할 것.
 SEED_FEEDS = [
-    "https://www.ppomppu.co.kr/rss.php?id=coupon",  # 뽐뿌 쿠폰/앱테크성 글
-    "https://www.ppomppu.co.kr/rss.php?id=event",  # 뽐뿌 이벤트 게시판
+    ("https://www.ppomppu.co.kr/rss.php?id=coupon", "뽐뿌 쿠폰"),  # 앱테크성 글이 가장 많음
+    ("https://www.ppomppu.co.kr/rss.php?id=event", "뽐뿌 이벤트"),
+    ("https://www.ppomppu.co.kr/rss.php?id=money", "뽐뿌 재테크"),  # 잡글이 섞여 점수로 걸러냄
 ]
+FEEDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feeds.txt")
+
+
+def read_feeds_file(path=None):
+    """feeds.txt: 한 줄에 `URL 이름`. `#`로 시작하는 줄과 빈 줄은 무시."""
+    out = []
+    try:
+        lines = open(path or FEEDS_FILE, encoding="utf-8").read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        url, _, label = line.partition(" ")
+        if url.startswith(("http://", "https://")):
+            out.append((url, label.strip() or urlparse(url).netloc))
+    return out
 
 
 def connect():
@@ -56,18 +75,24 @@ def connect():
             UNIQUE(service_id, day));
         CREATE TABLE IF NOT EXISTS feed(
             id INTEGER PRIMARY KEY,
-            url TEXT UNIQUE NOT NULL);
+            url TEXT UNIQUE NOT NULL,
+            label TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS event(
             id INTEGER PRIMARY KEY,
             feed_id INTEGER NOT NULL REFERENCES feed(id),
             title TEXT NOT NULL,
             link TEXT UNIQUE NOT NULL,
-            seen TEXT NOT NULL);
+            seen TEXT NOT NULL,
+            published TEXT NOT NULL DEFAULT '');
         """
     )
     cols = {r["name"] for r in con.execute("PRAGMA table_info(service)")}
     if "expire_days" not in cols:  # 기존 DB 마이그레이션
         con.execute("ALTER TABLE service ADD COLUMN expire_days INTEGER NOT NULL DEFAULT 0")
+    if "label" not in {r["name"] for r in con.execute("PRAGMA table_info(feed)")}:
+        con.execute("ALTER TABLE feed ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+    if "published" not in {r["name"] for r in con.execute("PRAGMA table_info(event)")}:
+        con.execute("ALTER TABLE event ADD COLUMN published TEXT NOT NULL DEFAULT ''")
     return con
 
 
@@ -87,10 +112,12 @@ def cmd_init(con, a):
             (name, task, est, exp, note),
         )
         n += cur.rowcount
-    for url in SEED_FEEDS:
-        con.execute("INSERT OR IGNORE INTO feed(url) VALUES(?)", (url,))
+    feeds = SEED_FEEDS + read_feeds_file()
+    for url, label in feeds:
+        con.execute("INSERT OR IGNORE INTO feed(url,label) VALUES(?,?)", (url, label))
+        con.execute("UPDATE feed SET label=? WHERE url=? AND label=''", (label, url))
     con.commit()
-    print(f"{n}개 서비스 추가 (이미 있던 항목은 유지), 기본 피드 {len(SEED_FEEDS)}개 등록")
+    print(f"{n}개 서비스 추가 (이미 있던 항목은 유지), 피드 {len(feeds)}개 등록")
 
 
 def cmd_add(con, a):
@@ -198,23 +225,42 @@ def cmd_expiring(con, a):
     print(f"합계: {sum(r[3] for r in rows)}원")
 
 
+def norm_date(text):
+    """RSS(RFC 822)/Atom(ISO 8601) 날짜 문자열을 YYYY-MM-DD로. 실패하면 ''."""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    try:
+        from email.utils import parsedate_to_datetime
+
+        return parsedate_to_datetime(text).date().isoformat()
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return ""
+
+
 def parse_feed(xml_text):
-    """RSS 2.0 / Atom에서 (title, link) 목록을 뽑는다."""
+    """RSS 2.0 / Atom에서 (title, link, published) 목록을 뽑는다."""
     root = ET.fromstring(xml_text)
     items = []
     for el in root.iter():
         tag = el.tag.rsplit("}", 1)[-1]
         if tag not in ("item", "entry"):
             continue
-        title = link = ""
+        title = link = pub = ""
         for c in el:
             t = c.tag.rsplit("}", 1)[-1]
             if t == "title":
                 title = (c.text or "").strip()
             elif t == "link":
                 link = (c.get("href") or c.text or "").strip()
+            elif t in ("pubDate", "published", "updated", "date") and not pub:
+                pub = norm_date(c.text)
         if title and link:
-            items.append((title, link))
+            items.append((title, link, pub))
     return items
 
 
@@ -253,7 +299,10 @@ def cmd_feed(con, a):
         if not a.url:
             sys.exit("추가할 피드 URL을 지정하세요.")
         try:
-            con.execute("INSERT INTO feed(url) VALUES(?)", (a.url,))
+            con.execute(
+                "INSERT INTO feed(url,label) VALUES(?,?)",
+                (a.url, a.label or urlparse(a.url).netloc),
+            )
         except sqlite3.IntegrityError:
             sys.exit("이미 등록된 피드")
         con.commit()
@@ -263,7 +312,10 @@ def cmd_feed(con, a):
             print(r["url"])
 
 
-KEYWORDS = ("출석", "이벤트", "포인트", "적립", "쿠폰", "리워드")
+KEYWORDS = (
+    "출석", "출첵", "이벤트", "포인트", "적립", "쿠폰", "리워드", "퀴즈", "뽑기", "룰렛", "줍줍",
+    "만보기", "네이버페이", "토스", "페이", "캐시", "기프티콘", "상품권", "앱테크", "미션",
+)
 
 
 def collect(con, fetcher=fetch, keywords=KEYWORDS):
@@ -274,12 +326,13 @@ def collect(con, fetcher=fetch, keywords=KEYWORDS):
         except Exception as e:  # 피드 하나가 실패해도 나머지는 계속
             print(f"! {f['url']}: {e}", file=sys.stderr)
             continue
-        for title, link in items:
+        for title, link, pub in items:
             if keywords and not any(k in title for k in keywords):
                 continue
             cur = con.execute(
-                "INSERT OR IGNORE INTO event(feed_id,title,link,seen) VALUES(?,?,?,?)",
-                (f["id"], title, link, date.today().isoformat()),
+                "INSERT OR IGNORE INTO event(feed_id,title,link,seen,published) "
+                "VALUES(?,?,?,?,?)",
+                (f["id"], title, link, date.today().isoformat(), pub),
             )
             new += cur.rowcount
     con.commit()
@@ -290,16 +343,50 @@ def cmd_collect(con, a):
     print(f"새 이벤트 {collect(con)}건")
 
 
+def merge_events(existing, fresh, keep_days=90, limit=500, today=None):
+    """기존 목록에 새 이벤트를 합친다. 링크가 같으면 기존 항목(최초 발견일)을 유지하고,
+    keep_days보다 오래된 것은 버리며, 최신순으로 limit개까지 남긴다."""
+    today = today or date.today()
+    by_link = {}
+    for e in list(existing) + list(fresh):
+        if isinstance(e, dict) and e.get("link") and e.get("title"):
+            old = by_link.get(e["link"])
+            if old:  # 기존 항목에 비어 있는 필드만 채운다
+                for k in ("source", "published"):
+                    if not old.get(k) and e.get(k):
+                        old[k] = e[k]
+            else:
+                by_link[e["link"]] = {
+                    "title": e["title"], "link": e["link"],
+                    "seen": e.get("seen") or today.isoformat(),
+                    "published": e.get("published") or "", "source": e.get("source") or "",
+                }
+    cutoff = (today - timedelta(days=keep_days)).isoformat()
+    kept = [e for e in by_link.values() if (e["published"] or e["seen"]) >= cutoff]
+    kept.sort(key=lambda e: (e["published"] or e["seen"], e["seen"]), reverse=True)
+    return kept[:limit]
+
+
 def cmd_export_events(con, a):
-    """앱(app/index.html)이 읽는 events.json을 만든다."""
+    """앱(app/index.html)이 읽는 events.json을 만든다. --merge로 기존 파일에 누적."""
     import json
 
     rows = con.execute(
-        "SELECT title, link, seen FROM event ORDER BY id DESC LIMIT ?", (a.limit,)
+        """SELECT e.title, e.link, e.seen, e.published, f.label AS source
+           FROM event e JOIN feed f ON f.id=e.feed_id ORDER BY e.id DESC LIMIT ?""",
+        (a.limit,),
     ).fetchall()
+    fresh = [dict(r) for r in rows]
+    existing = []
+    if a.merge:
+        try:
+            existing = json.load(open(a.merge, encoding="utf-8"))
+        except (OSError, ValueError):
+            existing = []  # 없거나 깨졌으면 새로 시작
+    out = merge_events(existing, fresh, a.keep_days, a.limit) if a.merge else fresh
     with open(a.out, "w", encoding="utf-8") as f:
-        json.dump([dict(r) for r in rows], f, ensure_ascii=False, indent=1)
-    print(f"{len(rows)}건 -> {a.out}")
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    print(f"{len(out)}건 -> {a.out}" + (f" (기존 {len(existing)}건과 병합)" if a.merge else ""))
 
 
 def cmd_events(con, a):
@@ -394,6 +481,7 @@ def build_parser():
     x = sub.add_parser("feed", help="이벤트 수집용 RSS/Atom 피드 관리")
     x.add_argument("action", choices=["add", "list"])
     x.add_argument("url", nargs="?")
+    x.add_argument("--label", default="", help="출처 이름(앱에 표시)")
     x.set_defaults(fn=cmd_feed)
     sub.add_parser("collect", help="피드에서 이벤트 수집").set_defaults(fn=cmd_collect)
     x = sub.add_parser("morning", help="아침 리포트(수집+오늘 할 일+소멸 임박+새 이벤트)")
@@ -407,7 +495,9 @@ def build_parser():
     x.set_defaults(fn=cmd_cron)
     x = sub.add_parser("export-events", help="앱용 events.json 내보내기")
     x.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "app", "events.json"))
-    x.add_argument("--limit", type=int, default=30)
+    x.add_argument("--limit", type=int, default=500)
+    x.add_argument("--merge", metavar="FILE", help="기존 events.json에 누적(같은 링크는 중복 제거)")
+    x.add_argument("--keep-days", type=int, default=90, help="이보다 오래된 이벤트는 버림")
     x.set_defaults(fn=cmd_export_events)
     x = sub.add_parser("events", help="수집된 이벤트 보기")
     x.add_argument("--limit", type=int, default=20)
