@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%232f6fed'/%3E%3Ctext x='50' y='68' font-size='56' text-anchor='middle' fill='white' font-family='sans-serif'%3EP%3C/text%3E%3C/svg%3E">
+<title>Point 앱테크 체크</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--line:#262a33;--fg:#e8eaee;--mute:#8b92a0;--acc:#2f6fed;--ok:#2fb86b;--warn:#e0a030}
+@media (prefers-color-scheme:light){:root{--bg:#f4f5f8;--card:#fff;--line:#e2e5ec;--fg:#14171f;--mute:#667085}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Noto Sans KR",sans-serif;padding:0 16px 96px}
+main{max-width:640px;margin:0 auto}
+header{padding:calc(env(safe-area-inset-top) + 18px) 0 8px;display:flex;justify-content:space-between;align-items:flex-end}
+h1{font-size:20px;margin:0}
+#clock{color:var(--mute);font-size:13px;text-align:right}
+h2{font-size:13px;color:var(--mute);margin:22px 0 8px;font-weight:600;letter-spacing:.02em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px}
+.row{display:flex;gap:10px;align-items:center}
+.grow{flex:1;min-width:0}
+.name{font-weight:600}
+.sub{color:var(--mute);font-size:13px;word-break:break-word}
+.tag{font-size:12px;color:var(--warn)}
+button{font:inherit;border:0;border-radius:9px;padding:9px 13px;background:var(--acc);color:#fff;cursor:pointer;min-height:40px}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--fg)}
+button.ok{background:var(--ok)}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+a{color:var(--acc)}
+.empty{color:var(--mute);padding:10px 2px}
+.sum{display:flex;gap:8px}
+.sum .card{flex:1;margin:0}
+.big{font-size:20px;font-weight:700}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--fg);width:min(92vw,420px);padding:16px}
+dialog::backdrop{background:#0008}
+label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
+input,select{width:100%;font:inherit;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+.days{display:flex;gap:4px;flex-wrap:wrap}
+.days label{display:flex;align-items:center;gap:4px;margin:0;color:var(--fg);padding:6px 9px;border:1px solid var(--line);border-radius:8px}
+.days input{width:auto}
+.fab{position:fixed;right:16px;bottom:calc(env(safe-area-inset-bottom) + 16px);border-radius:999px;padding:12px 18px;box-shadow:0 4px 14px #0006}
+footer{margin-top:28px;color:var(--mute);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Point</h1>
+    <div id="clock" aria-live="off"></div>
+  </header>
+
+  <div class="sum" id="sum"></div>
+
+  <h2>지금 할 수 있는 것</h2>
+  <section id="active"></section>
+
+  <h2>곧 열려요 (오늘)</h2>
+  <section id="upcoming"></section>
+
+  <h2>오늘 완료</h2>
+  <section id="done"></section>
+
+  <h2>새 이벤트 <span id="evinfo" class="sub"></span></h2>
+  <section id="events"></section>
+
+  <h2>전체 항목</h2>
+  <section id="all"></section>
+
+  <footer>
+    <p>자동으로 눌러주지 않습니다. 지금 할 수 있는 것을 보여주고, 직접 한 뒤 완료만 기록합니다.
+    적립 조건은 검증되지 않았으니 각 앱 공지에서 확인 후 항목을 수정하세요.</p>
+    <button class="ghost" id="exp">백업 내보내기</button>
+    <button class="ghost" id="imp">백업 불러오기</button>
+    <input type="file" id="file" accept="application/json" hidden>
+  </footer>
+</main>
+<button class="fab" id="add">+ 항목 추가</button>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <h3 id="dlgTitle" style="margin:0 0 4px">항목</h3>
+    <label for="f_name">이름</label><input id="f_name" required maxlength="40">
+    <label for="f_task">할 일</label><input id="f_task" maxlength="80" placeholder="예: 출석체크">
+    <label>요일 (선택 안 하면 매일)</label>
+    <div class="days" id="f_days"></div>
+    <div class="row">
+      <div class="grow"><label for="f_start">시작</label><input id="f_start" type="time" value="00:00"></div>
+      <div class="grow"><label for="f_end">끝</label><input id="f_end" type="time" value="23:59"></div>
+    </div>
+    <label for="f_est">하루 예상 수익(원)</label><input id="f_est" type="number" min="0" value="0">
+    <label for="f_url">링크 (선택)</label><input id="f_url" type="url" placeholder="https://">
+    <label for="f_note">메모</label><input id="f_note" maxlength="120">
+    <div class="row" style="margin-top:16px">
+      <button type="button" class="ghost" id="f_del" hidden>삭제</button>
+      <span class="grow"></span>
+      <button type="button" class="ghost" id="f_cancel">취소</button>
+      <button type="submit" id="f_save">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+const KEY = "point.v1";
+const DAYS = ["일","월","화","수","목","금","토"];
+
+// 웹 검색으로 확인한 서비스. 시간대는 확인된 것만 설정(나머지는 종일). 조건은 미검증.
+const SEED = [
+  {name:"토스", task:"만보기 적립 (1만보 기준 하루 최대 약 140원)", est:140, note:""},
+  {name:"캐시업", task:"출석체크", note:"네이버페이/상품권 교환"},
+  {name:"지니어트", task:"출석/걷기/기록으로 젤리 적립", note:"미사용 젤리는 다음 달 소멸"},
+  {name:"리워드플랫폼", task:"출석체크 및 미션", note:"출금 조건 미확인"},
+  {name:"캐시워크", task:"걸음 수 적립 (하루 1만보까지)", note:"[미검증] 조건은 앱 약관 확인"},
+  {name:"네이버페이", task:"매일 브랜드뽑기 (14시 오픈)", start:"14:00", note:"뽐뿌 게시글 기준, 시간 직접 확인"},
+];
+
+// ---------- 순수 로직 (테스트에서 직접 호출) ----------
+const pad = n => String(n).padStart(2, "0");
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const mins = s => { const [h,m] = s.split(":").map(Number); return h*60 + m; };
+
+/** 항목이 now 시점에 열려 있는지. 끝<시작이면 자정을 넘기는 시간대로 본다. */
+function isOpen(item, now) {
+  const dow = now.getDay(), cur = now.getHours()*60 + now.getMinutes();
+  const s = mins(item.start || "00:00"), e = mins(item.end || "23:59");
+  const days = item.days && item.days.length ? item.days : null;
+  if (s <= e) return (!days || days.includes(dow)) && cur >= s && cur <= e;
+  if (cur >= s) return !days || days.includes(dow);                 // 시작 당일 밤
+  if (cur <= e) return !days || days.includes((dow + 6) % 7);       // 다음날 새벽
+  return false;
+}
+/** 오늘 아직 안 열렸지만 오늘 중 열리는가 */
+function opensLater(item, now) {
+  const days = item.days && item.days.length ? item.days : null;
+  if (days && !days.includes(now.getDay())) return false;
+  return mins(item.start || "00:00") > now.getHours()*60 + now.getMinutes();
+}
+function classify(items, doneToday, now) {
+  const out = {active:[], upcoming:[], done:[], other:[]};
+  for (const it of items) {
+    if (it.paused) out.other.push(it);
+    else if (doneToday[it.id] !== undefined) out.done.push(it);
+    else if (isOpen(it, now)) out.active.push(it);
+    else if (opensLater(it, now)) out.upcoming.push(it);
+    else out.other.push(it);
+  }
+  const byEst = (a,b) => (b.est||0) - (a.est||0) || a.name.localeCompare(b.name, "ko");
+  out.active.sort(byEst);
+  out.upcoming.sort((a,b) => mins(a.start) - mins(b.start));
+  return out;
+}
+window.PointApp = {isOpen, opensLater, classify, ymd};
+
+// ---------- 저장소 ----------
+let mem = null;
+function load() {
+  try { const raw = localStorage.getItem(KEY); if (raw) return JSON.parse(raw); } catch (_) {}
+  return mem || {items: SEED.map((s,i) => ({id:"s"+i, days:[], start:"00:00", end:"23:59", est:0, url:"", ...s})), log:{}};
+}
+function save() { mem = state; try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {} }
+let state = load();
+let events = [];
+
+// ---------- 렌더 ----------
+const $ = id => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) n.append(k);
+  return n;
+};
+function windowText(it) {
+  const d = it.days && it.days.length ? it.days.map(i => DAYS[i]).join("") : "매일";
+  const t = (it.start||"00:00")==="00:00" && (it.end||"23:59")==="23:59" ? "종일" : `${it.start}~${it.end}`;
+  return `${d} ${t}`;
+}
+function itemCard(it, mode) {
+  const info = el("div", {className:"grow"},
+    el("div", {className:"name"}, it.name),
+    el("div", {className:"sub"}, it.task + (it.est ? ` · ~${it.est}원` : "")),
+    el("div", {className:"sub"}, windowText(it) + (it.note ? ` · ${it.note}` : "")));
+  const row = el("div", {className:"row"}, info);
+  if (it.url) row.append(el("a", {href:it.url, target:"_blank", rel:"noopener noreferrer", textContent:"열기"}));
+  if (mode === "active" || mode === "upcoming") {
+    row.append(el("button", {className:"ok", textContent:"완료", onclick:() => markDone(it)}));
+  } else if (mode === "done") {
+    const won = state.log[ymd(new Date())][it.id];
+    row.append(el("span", {className:"tag", textContent:`+${won}원`}),
+               el("button", {className:"ghost", textContent:"취소", onclick:() => undo(it)}));
+  } else {
+    row.append(el("button", {className:"ghost", textContent:"수정", onclick:() => openForm(it)}));
+  }
+  const c = el("div", {className:"card"}, row);
+  if (mode === "upcoming") info.querySelector(".name").append(el("span", {className:"tag", textContent:`  ${it.start} 오픈`}));
+  return c;
+}
+function fill(id, nodes, emptyText) {
+  const box = $(id); box.replaceChildren(...(nodes.length ? nodes : [el("div", {className:"empty"}, emptyText)]));
+}
+function monthSum(now) {
+  const prefix = ymd(now).slice(0, 7);
+  let sum = 0, days = 0;
+  for (const [d, m] of Object.entries(state.log)) if (d.startsWith(prefix)) { days++; sum += Object.values(m).reduce((a,b) => a + b, 0); }
+  return {sum, days};
+}
+function render() {
+  const now = new Date();
+  $("clock").textContent = `${now.getMonth()+1}/${now.getDate()} (${DAYS[now.getDay()]}) ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const doneToday = state.log[ymd(now)] || {};
+  const c = classify(state.items, doneToday, now);
+  fill("active", c.active.map(i => itemCard(i, "active")), "지금 열려 있는 항목이 없어요.");
+  fill("upcoming", c.upcoming.map(i => itemCard(i, "upcoming")), "오늘 더 열릴 항목이 없어요.");
+  fill("done", c.done.map(i => itemCard(i, "done")), "아직 완료한 항목이 없어요.");
+  fill("all", state.items.map(i => itemCard(i, "all")), "항목이 없어요. + 버튼으로 추가하세요.");
+  const m = monthSum(now);
+  $("sum").replaceChildren(
+    el("div", {className:"card"}, el("div", {className:"sub"}, "오늘 남은 일"), el("div", {className:"big"}, `${c.active.length + c.upcoming.length}개`)),
+    el("div", {className:"card"}, el("div", {className:"sub"}, "이번 달 기록"), el("div", {className:"big"}, `${m.sum.toLocaleString()}원`), el("div", {className:"sub"}, `${m.days}일`)));
+  renderEvents();
+}
+function renderEvents() {
+  $("evinfo").textContent = events.length ? "" : "(events.json 없음)";
+  fill("events", events.slice(0, 12).map(e => {
+    const a = el("a", {href:e.link, target:"_blank", rel:"noopener noreferrer", textContent:e.title});
+    return el("div", {className:"card"}, a, el("div", {className:"sub"}, e.seen || ""));
+  }), "수집된 이벤트가 없어요. CLI의 `export-events`로 events.json을 만들어 이 폴더에 두세요.");
+}
+
+// ---------- 동작 ----------
+function markDone(it) {
+  const v = prompt(`${it.name}: 받은 금액(원)을 입력하세요. 모르면 0`, it.est || 0);
+  if (v === null) return;
+  const won = Math.max(0, Math.round(Number(v) || 0));
+  (state.log[ymd(new Date())] ||= {})[it.id] = won;
+  save(); render();
+}
+function undo(it) { delete state.log[ymd(new Date())][it.id]; save(); render(); }
+
+let editing = null;
+function openForm(it) {
+  editing = it || null;
+  $("dlgTitle").textContent = it ? "항목 수정" : "항목 추가";
+  $("f_name").value = it?.name || ""; $("f_task").value = it?.task || "";
+  $("f_start").value = it?.start || "00:00"; $("f_end").value = it?.end || "23:59";
+  $("f_est").value = it?.est || 0; $("f_url").value = it?.url || ""; $("f_note").value = it?.note || "";
+  document.querySelectorAll("#f_days input").forEach(cb => cb.checked = !!it?.days?.includes(Number(cb.value)));
+  $("f_del").hidden = !it;
+  $("dlg").showModal();
+}
+$("add").onclick = () => openForm(null);
+$("f_cancel").onclick = () => $("dlg").close();
+$("f_del").onclick = () => {
+  if (!confirm(`'${editing.name}' 항목을 삭제할까요? (기록은 남습니다)`)) return;
+  state.items = state.items.filter(i => i !== editing); save(); $("dlg").close(); render();
+};
+$("form").onsubmit = ev => {
+  const data = {
+    name: $("f_name").value.trim(), task: $("f_task").value.trim() || "출석체크",
+    days: [...document.querySelectorAll("#f_days input:checked")].map(cb => Number(cb.value)),
+    start: $("f_start").value || "00:00", end: $("f_end").value || "23:59",
+    est: Math.max(0, Number($("f_est").value) || 0), url: $("f_url").value.trim(), note: $("f_note").value.trim(),
+  };
+  if (!data.name) { ev.preventDefault(); return; }
+  if (editing) Object.assign(editing, data); else state.items.push({id:"u" + Date.now().toString(36), ...data});
+  save(); render();
+};
+DAYS.forEach((d, i) => $("f_days").append(el("label", {}, el("input", {type:"checkbox", value:i}), d)));
+
+$("exp").onclick = () => {
+  const a = el("a", {href:URL.createObjectURL(new Blob([JSON.stringify(state, null, 1)], {type:"application/json"})), download:`point-backup-${ymd(new Date())}.json`});
+  a.click(); URL.revokeObjectURL(a.href);
+};
+$("imp").onclick = () => $("file").click();
+$("file").onchange = async () => {
+  const f = $("file").files[0]; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    if (!Array.isArray(d.items) || typeof d.log !== "object") throw new Error("형식 오류");
+    if (confirm("현재 데이터를 백업 파일로 덮어쓸까요?")) { state = d; save(); render(); }
+  } catch (e) { alert("불러오기 실패: " + e.message); }
+  $("file").value = "";
+};
+
+async function loadEvents() {
+  try { const r = await fetch("events.json", {cache:"no-cache"}); if (r.ok) events = await r.json(); } catch (_) {}
+  renderEvents();
+}
+render(); loadEvents();
+setInterval(render, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { render(); loadEvents(); } });
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
